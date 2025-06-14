@@ -431,6 +431,43 @@ echo "Starting Claude Desktop AppRun at \$(date)" >> /tmp/claude-apprun.log
 export PATH="\$HERE/usr/bin:\$HERE/usr/lib/claude-desktop/node_modules/.bin:\$PATH"
 export LD_LIBRARY_PATH="\$HERE/usr/lib:\$PATH"
 
+# Log environment variables for debugging
+echo "Environment debug info:" >> /tmp/claude-apprun.log
+echo "  WAYLAND_DISPLAY=\$WAYLAND_DISPLAY" >> /tmp/claude-apprun.log
+echo "  DISPLAY=\$DISPLAY" >> /tmp/claude-apprun.log
+echo "  XDG_SESSION_TYPE=\$XDG_SESSION_TYPE" >> /tmp/claude-apprun.log
+
+# Detect if Wayland is actually running (more robust detection)
+IS_WAYLAND=false
+if [ ! -z "\$WAYLAND_DISPLAY" ] && [ -z "\$DISPLAY" ]; then
+  # Pure Wayland session (no X11 fallback)
+  IS_WAYLAND=true
+  echo "Wayland detection: Pure Wayland session detected" >> /tmp/claude-apprun.log
+elif [ ! -z "\$WAYLAND_DISPLAY" ] && [ ! -z "\$XDG_SESSION_TYPE" ] && [ "\$XDG_SESSION_TYPE" = "wayland" ]; then
+  # XDG session type explicitly set to wayland
+  IS_WAYLAND=true
+  echo "Wayland detection: XDG_SESSION_TYPE is wayland" >> /tmp/claude-apprun.log
+elif [ ! -z "\$WAYLAND_DISPLAY" ] && pgrep -x "sway\\|weston\\|mutter\\|kwin_wayland" > /dev/null 2>&1; then
+  # Check if common Wayland compositors are running
+  IS_WAYLAND=true
+  echo "Wayland detection: Wayland compositor detected" >> /tmp/claude-apprun.log
+else
+  echo "Wayland detection: X11 mode detected" >> /tmp/claude-apprun.log
+fi
+
+# Final mode determination
+if [ "\$IS_WAYLAND" = true ]; then
+  echo "*** RUNNING IN WAYLAND MODE ***" >> /tmp/claude-apprun.log
+else
+  echo "*** RUNNING IN X11 MODE ***" >> /tmp/claude-apprun.log
+fi
+
+# Detect if Wayland is likely running
+IS_WAYLAND=false
+if [ ! -z "\$WAYLAND_DISPLAY" ]; then
+  IS_WAYLAND=true
+fi
+
 # Find electron paths - this will help when electron is not bundled
 if [ -f "\$HERE/usr/lib/claude-desktop/node_modules/.bin/electron" ]; then
     # Use bundled electron
@@ -518,26 +555,24 @@ if [ -z "\$ELECTRON_PATH" ] || [ ! -x "\$ELECTRON_PATH" ]; then
     exit 1
 fi
 
-# Run the electron app with the ASAR file (with sandbox disabled)
-echo "Running: \$ELECTRON_PATH --no-sandbox \$HERE/usr/lib/claude-desktop/app.asar \$@" >> /tmp/claude-apprun.log
+# Base command arguments array
+# Add --no-sandbox flag to avoid sandbox issues within AppImage
+ELECTRON_ARGS=("--no-sandbox" "\$HERE/usr/lib/claude-desktop/app.asar")
 
-# If it's an NVM-installed electron or appears to be a script rather than a binary
-if echo "\$ELECTRON_PATH" | grep -q "nvm" || file "\$ELECTRON_PATH" | grep -q "script"; then
-    # For NVM or script-based Electron, make sure we have node in PATH and use --no-sandbox
-    if [ -n "\$NODE_PATH" ]; then
-        echo "Using Node.js: \$NODE_PATH" >> /tmp/claude-apprun.log
-        NODE_DIR="\$(dirname "\$NODE_PATH")"
-        export PATH="\$NODE_DIR:\$PATH"
-    fi
-
-    # Ensure we use no-sandbox option when using NVM
-    echo "Using script-based Electron with --no-sandbox" >> /tmp/claude-apprun.log
-    exec "\$ELECTRON_PATH" --no-sandbox "\$HERE/usr/lib/claude-desktop/app.asar" "\$@"
-else
-    # For direct binary Electron installations, also use no-sandbox
-    echo "Using binary Electron with --no-sandbox" >> /tmp/claude-apprun.log
-    exec "\$ELECTRON_PATH" --no-sandbox "\$HERE/usr/lib/claude-desktop/app.asar" "\$@"
+# Add Wayland flags if Wayland is detected
+if [ "\$IS_WAYLAND" = true ]; then
+  echo "AppRun: Wayland detected, adding flags." >> /tmp/claude-apprun.log
+  ELECTRON_ARGS+=("--enable-features=UseOzonePlatform,WaylandWindowDecorations" "--ozone-platform=wayland" "--enable-wayland-ime" "--wayland-text-input-version=3")
 fi
+
+# Change to HOME directory before exec'ing Electron to avoid CWD permission issues
+cd "\$HOME" || exit 1
+
+# Execute Electron with app path, flags, and script arguments passed to AppRun
+echo "Running: \$ELECTRON_PATH \${ELECTRON_ARGS[@]} \$@" >> /tmp/claude-apprun.log
+
+# Use the array for proper argument handling
+exec "\$ELECTRON_PATH" "\${ELECTRON_ARGS[@]}" "\$@"
 EOF
 chmod +x "$APP_DIR/AppRun"
 
